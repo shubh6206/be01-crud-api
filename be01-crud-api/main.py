@@ -199,90 +199,82 @@ async def create_task(request: Request):
 @app.put(
     "/tasks/{task_id}",
     response_model=Task,
-    responses={
-        400: {"model": ErrorResponse, "description": "Validation Error / Bad Request"},
-        404: {"model": ErrorResponse, "description": "Task not found"}
-    },
+    responses={400: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
     tags=["Tasks"],
-    summary="Update an Existing Task",
-    description="Updates the title and/or completion status of an existing task identified by its ID."
+    summary="Update an Existing Task"
 )
 async def update_task(task_id: int, request: Request):
-    target_task = None
-    for task in tasks:
-        if task["id"] == task_id:
-            target_task = task
-            break
-
-    if not target_task:
-        return JSONResponse(
-            status_code=status.HTTP_404_NOT_FOUND,
-            content={"error": f"Task {task_id} not found"}
-        )
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    # 1. Check if task exists
+    cursor.execute("SELECT * FROM tasks WHERE id=?", (task_id,))
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        return JSONResponse(status_code=404, content={"error": f"Task {task_id} not found"})
 
     try:
         data = await request.json()
     except Exception:
-        return JSONResponse(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            content={"error": "Invalid JSON payload"}
-        )
+        conn.close()
+        return JSONResponse(status_code=400, content={"error": "Invalid JSON payload"})
 
     if not isinstance(data, dict) or not data:
-        return JSONResponse(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            content={"error": "Request body must be a non-empty JSON object"}
-        )
+        conn.close()
+        return JSONResponse(status_code=400, content={"error": "Request body must be a non-empty JSON object"})
 
+    new_title = row["title"]
+    new_done = bool(row["done"])
     has_update = False
+
     if "title" in data:
         title = data["title"]
         if not isinstance(title, str) or not title.strip():
-            return JSONResponse(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                content={"error": "Title cannot be empty"}
-            )
-        target_task["title"] = title.strip()
+            conn.close()
+            return JSONResponse(status_code=400, content={"error": "Title cannot be empty"})
+        new_title = title.strip()
         has_update = True
 
     if "done" in data:
         done = data["done"]
         if not isinstance(done, bool):
-            return JSONResponse(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                content={"error": "Done field must be a boolean"}
-            )
-        target_task["done"] = done
+            conn.close()
+            return JSONResponse(status_code=400, content={"error": "Done field must be a boolean"})
+        new_done = done
         has_update = True
 
     if not has_update:
-        return JSONResponse(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            content={"error": "No valid fields provided for update"}
-        )
+        conn.close()
+        return JSONResponse(status_code=400, content={"error": "No valid fields provided for update"})
 
-    return target_task
+    cursor.execute("UPDATE tasks SET title=?, done=? WHERE id=?", (new_title, int(new_done), task_id))
+    conn.commit()
+    conn.close()
+
+    return {"id": task_id, "title": new_title, "done": new_done}
 
 @app.delete(
     "/tasks/{task_id}",
     status_code=status.HTTP_204_NO_CONTENT,
-    responses={404: {"model": ErrorResponse, "description": "Task not found"}},
+    responses={404: {"model": ErrorResponse}},
     tags=["Tasks"],
-    summary="Delete a Task",
-    description="Removes a task from memory by its ID. Returns status 204 No Content upon success."
+    summary="Delete a Task"
 )
 def delete_task(task_id: int):
-    global tasks
-    for i, task in enumerate(tasks):
-        if task["id"] == task_id:
-            tasks.pop(i)
-            return Response(status_code=status.HTTP_204_NO_CONTENT)
-
-    return JSONResponse(
-        status_code=status.HTTP_404_NOT_FOUND,
-        content={"error": f"Task {task_id} not found"}
-    )
-
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT * FROM tasks WHERE id=?", (task_id,))
+    if not cursor.fetchone():
+        conn.close()
+        return JSONResponse(status_code=404, content={"error": f"Task {task_id} not found"})
+        
+    cursor.execute("DELETE FROM tasks WHERE id=?", (task_id,))
+    conn.commit()
+    conn.close()
+    
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 @app.get(
     "/stats",
     response_model=TaskStats,
