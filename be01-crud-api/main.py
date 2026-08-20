@@ -2,6 +2,40 @@ from typing import List, Optional
 from fastapi import FastAPI, Request, Response, Query, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+import sqlite3
+
+ # database creation
+def init_db():
+    conn=sqlite3.connect("tasks.db")
+    cursor=conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS tasks(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT NOT NULL,
+        done INTEGER DEFAULT 0
+        )
+        """)
+
+    #check if the table isempty by counting the rows
+    cursor.execute('Select count(*) from tasks')
+    count=cursor.fetchone()[0]
+
+    #Seed three example tasks only if the count is 0
+    if count==0:
+        seed_tasks=[
+            ('set up SQLite database',1),
+            ('Write raw SQL queries',0),
+            ("Complete the Backend internship",0)
+        ]
+        #Using a parametrised query to insert multiple rowa safely
+        cursor.executemany(
+            "Insert Into tasks (title,done) VALUES (?,?)",
+            seed_tasks
+        )
+        conn.commit()
+        conn.close()
+
+init_db()
 
 # App metadata for Swagger UI
 app = FastAPI(
