@@ -36,6 +36,11 @@ def init_db():
         conn.close()
 
 init_db()
+def get_db():
+    conn=sqlite3.connect("tasks.db")
+    #this allows column acess by name
+    conn.row_factory =sqlite3.Row
+    return conn
 
 # App metadata for Swagger UI
 app = FastAPI(
@@ -119,13 +124,24 @@ def get_tasks(
     done: Optional[bool] = Query(None, description="Filter tasks by completion status (true or false)"),
     search: Optional[str] = Query(None, description="Filter tasks whose title contains the search keyword (case-insensitive)")
 ):
-    result = tasks
+    conn=get_db()
+    cursor=conn.cursor()
+
+    query="SELECT * FROM tasks WHERE 1=1"
+    params=[]
     if done is not None:
-        result = [t for t in result if t["done"] == done]
+        query+=" AND done=?"
+        params.append(1 if done else 0)
+
     if search is not None and search.strip():
-        term = search.strip().lower()
-        result = [t for t in result if term in t["title"].lower()]
-    return result
+        query+=" AND title LIKE ?"
+        params.append(f"%{search.strip().lower()}%")
+
+    cursor.execute(query,params)
+    row=cursor.fetchall()
+    conn.close()
+
+    return [{"id":r["id"],"title": r["title"],"done":bool(r["done"])} for r in row]
 
 @app.get(
     "/tasks/{task_id}",
@@ -136,13 +152,18 @@ def get_tasks(
     description="Retrieves a single task by its unique ID parameter. Returns 404 if the task ID does not exist."
 )
 def get_task(task_id: int):
-    for task in tasks:
-        if task["id"] == task_id:
-            return task
-    return JSONResponse(
-        status_code=status.HTTP_404_NOT_FOUND,
-        content={"error": f"Task {task_id} not found"}
-    )
+  conn=get_db()
+  cursor=conn.cursor()
+  cursor.execute("SELECT * FROM tasks WHERE id=?",(task_id))
+  row =cursor.fetchone()
+  conn.close()
+
+  if not row:
+      return JSONResponse(
+          status_code=status.HTTP_404_NOT_FOUND,
+          content={"error": f"Task {task_id} not found"}
+      )
+  return {"id":row["id"],"title":row["title"],"done":bool(row["done"])}
 
 @app.post(
     "/tasks",
