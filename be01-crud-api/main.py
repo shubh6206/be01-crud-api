@@ -169,42 +169,33 @@ def get_task(task_id: int):
     "/tasks",
     response_model=Task,
     status_code=status.HTTP_201_CREATED,
-    responses={400: {"model": ErrorResponse, "description": "Validation Error / Bad Request"}},
+    responses={400: {"model": ErrorResponse, "description": "Bad Request"}},
     tags=["Tasks"],
-    summary="Create a New Task",
-    description="Creates a new task with an auto-assigned ID and default completion status of False. Requires a non-empty title."
+    summary="Create a New Task"
 )
 async def create_task(request: Request):
     try:
         data = await request.json()
     except Exception:
-        return JSONResponse(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            content={"error": "Invalid JSON payload"}
-        )
+        return JSONResponse(status_code=400, content={"error": "Invalid JSON payload"})
 
     if not isinstance(data, dict):
-        return JSONResponse(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            content={"error": "Request body must be a JSON object"}
-        )
+        return JSONResponse(status_code=400, content={"error": "Request body must be a JSON object"})
 
     title = data.get("title")
     if title is None or not isinstance(title, str) or not title.strip():
-        return JSONResponse(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            content={"error": "Title is required and cannot be empty"}
-        )
+        return JSONResponse(status_code=400, content={"error": "Title is required and cannot be empty"})
 
-    next_id = max([t["id"] for t in tasks], default=0) + 1
-    new_task = {
-        "id": next_id,
-        "title": title.strip(),
-        "done": False
-    }
-    tasks.append(new_task)
-    return JSONResponse(status_code=status.HTTP_201_CREATED, content=new_task)
-
+    clean_title = title.strip()
+    
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO tasks (title, done) VALUES (?, ?)", (clean_title, 0))
+    conn.commit()
+    new_id = cursor.lastrowid
+    conn.close()
+    
+    return JSONResponse(status_code=201, content={"id": new_id, "title": clean_title, "done": False})
 @app.put(
     "/tasks/{task_id}",
     response_model=Task,
