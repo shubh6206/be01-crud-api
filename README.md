@@ -1,337 +1,217 @@
-Containerized To-Do CRUD API (W1 · A3 — Containerize Your Stack)
-A production-ready RESTful CRUD API built with Python 3.11, FastAPI, and PostgreSQL, fully containerized with Docker and Docker Compose. Developed for the FlyRank Backend AI Engineering Track (Week 1 Assignment A3).
+# Auth · Login & Protect API (W2 · A4 — Auth · Login & Protect)
 
+A secure, production-ready RESTful API built with **Python 3.11**, **FastAPI**, and **Supabase Auth** as the Identity Provider. Developed for the **FlyRank Backend AI Engineering Track (Week 2 Assignment A4)**.
 
-🎯 The Big Idea: Memory → SQLite → Containerized PostgreSQL
-This project completes the three-tier evolution of storage architectures while maintaining 100% endpoint stability:
+---
 
-Assignment 1 (In-Memory): Ephemeral state stored in Python RAM; lost upon process exit.
-Assignment 2 (SQLite): File-based persistence in tasks.db; survives local process restarts.
-Assignment 3 (Containerized PostgreSQL): Full-stack containerization with a dedicated PostgreSQL database server running in Docker, backed by a persistent named volume (taskdata) and managed via environment secrets (.env).
+## 🎯 The Big Idea: The Auth Trust Triangle
 
-Assignment 1 (In-Memory):
+Secure authentication is a trust triangle between three parties: the **client**, your **backend server**, and the **Identity Provider (Supabase)**. Credentials (email & password) are sent to Supabase — your server never stores passwords or performs custom hashing.
 
-Client ───> FastAPI Routes ───> Volatile List in RAM (Lost on restart ❌)
+```
+Step                     Who does it            What happens
+1. Sign up / Log in      Client ──> Supabase    Client sends email + password to Supabase.
+2. The token             Supabase ──> Client    Supabase verifies credentials and returns a signed JWT access_token.
+3. The request           Client ──> Backend     Client calls your backend attaching Authorization: Bearer <token>.
+4. Verification          Backend ──> Supabase   Your server asks Supabase "is this token real?" via get_user(token).
+```
 
-Assignment 2 (SQLite):
+---
 
-Client ───> FastAPI Routes ───> tasks.db on Disk (Single-file persistent ✅)
+## 🚀 Quickstart: Run in One Command
 
-Assignment 3 (Containerized PostgreSQL):
+### Prerequisites
+- Python 3.10+
+- Dependencies: `fastapi`, `uvicorn`, `supabase`, `python-dotenv`
 
-Client ───> [Docker: api] ───> [Docker: db (Postgres)] ───> Named Volume (Production multi-container ✅)
+### Setup & Launch
 
-The Architectural Principle: Swapping the underlying database engine from memory to SQLite to PostgreSQL leaves the client-facing HTTP interface completely untouched. Storage is an implementation detail.
-
-
-🚀 Quickstart: Run in One Command
-Prerequisites
-Docker & Docker Compose installed.
-Setup & Launch
+```bash
 # 1. Clone the repository
-
-git clone https://github.com/shubham-smit/be01-crud-api.git
-
+git clone https://github.com/shubh6206/be01-crud-api.git
 cd be01-crud-api
 
-# 2. Copy environment template & start the entire stack (Single Command)
+# 2. Copy environment template & start server
+cp .env.example .env
+python main.py
+```
 
-cp .env.example .env && docker compose up --build
+- **API Base URL:** `http://localhost:8000`
+- **Interactive Swagger UI (with Padlock):** `http://localhost:8000/docs`
+- **Interactive ReDoc:** `http://localhost:8000/redoc`
 
-API Base URL: http://localhost:8000
-Interactive Swagger UI: http://localhost:8000/docs
-Interactive ReDoc: http://localhost:8000/redoc
+---
 
-To shut down the stack while keeping data safe in the persistent volume:
+## 🔐 Environment Variables & Secrets Management
 
-docker compose down
+Secrets live strictly in the git-ignored `.env` file:
 
+- `.env` — Contains real Supabase credentials (strictly git-ignored).
+- `.env.example` — Committed template showing required variable keys with safe defaults:
 
-🔐 Environment Variables & Secrets Management
-In adherence to Twelve-Factor App methodology, sensitive credentials are never committed to version control:
-
-.env — Contains real environment secrets (strictly git-ignored).
-.env.example — Committed template showing required variable keys with safe defaults:
-
-# PostgreSQL Connection URL
-
-DATABASE_URL=postgresql://postgres:dev@localhost:5432/tasks
-
-# Database Credentials
-
-POSTGRES_USER=postgres
-
-POSTGRES_PASSWORD=dev
-
-POSTGRES_DB=tasks
+```env
+# Supabase Credentials
+SUPABASE_URL=https://your-project-url.supabase.co
+SUPABASE_KEY=your_anon_key_here
 
 # Application Port
-
 PORT=8000
+```
 
-Inside the Docker Compose network, DATABASE_URL is automatically configured to point to the db container: postgresql://postgres:dev@db:5432/tasks
+---
 
+## 📌 API Endpoint Reference
 
-📌 API Endpoint Reference
-HTTP Method
-Endpoint
-Description
-Success Code
-Error Codes
-GET
-/
-API Root Metadata & Storage Layer Info
-200 OK
-—
-GET
-/health
-Service & PostgreSQL Database Health Check
-200 OK
-—
-GET
-/tasks
-List all tasks (supports ?done=, ?search=, ?sort=)
-200 OK
-—
-GET
-/tasks/{id}
-Retrieve single task by ID from PostgreSQL
-200 OK
-404 Not Found
-POST
-/tasks
-Insert task into Postgres with auto-assigned ID
-201 Created
-400 Bad Request
-PUT
-/tasks/{id}
-Update title and/or done status in Postgres
-200 OK
-400 Bad Request, 404 Not Found
-DELETE
-/tasks/{id}
-Delete task from Postgres
-204 No Content
-404 Not Found
-GET
-/stats
-Compute task metrics directly via SQL COUNT(*)
-200 OK
-—
-POST
-/reset
-Atomically reset database to initial 3 seed tasks
-200 OK
-—
+| HTTP Method | Endpoint | Description | Auth Required | Success Code | Error Codes |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **GET** | `/` | API Information & Health Status | None | `200 OK` | — |
+| **GET** | `/public/info` | Public open information | None | `200 OK` | — |
+| **POST** | `/auth/signup` | Register new user account | None | `201 Created` | `400 Bad Request` |
+| **POST** | `/auth/login` | Authenticate & return JWT access_token | None | `200 OK` | `400 Bad Request`, `401 Unauthorized` |
+| **POST** | `/auth/logout` | End user session | `Bearer <token>` | `204 No Content` | `401 Unauthorized` |
+| **GET** | `/protected/profile` | Read private profile data | `Bearer <token>` | `200 OK` | `401 Unauthorized` |
+| **GET** | `/protected/dashboard` | Read protected dashboard statistics | `Bearer <token>` | `200 OK` | `401 Unauthorized` |
 
+---
 
+## 🧪 Verified `curl -i` Execution Logs
 
-🧪 Verified curl -i Execution Logs
-Below are verified terminal responses demonstrating the complete lifecycle against PostgreSQL:
-1. Root & Health (with DB Ping)
-$ curl -i http://localhost:8000/
+### 1. Public Info (`GET /public/info`)
 
+```bash
+$ curl -i http://localhost:8000/public/info
 HTTP/1.1 200 OK
-
 content-type: application/json
 
-{"name":"Task API","version":"3.0","storage":"PostgreSQL (Docker container)","endpoints":["/tasks"]}
+{"message":"Welcome stranger! This info is public."}
+```
 
-$ curl -i http://localhost:8000/health
+### 2. Sign Up (`POST /auth/signup`)
 
-HTTP/1.1 200 OK
-
-content-type: application/json
-
-{"status":"ok","db":"ok"}
-2. Read Endpoints (GET /tasks & GET /tasks/{id})
-# Fetch all tasks (seeded live from PostgreSQL)
-
-$ curl -i http://localhost:8000/tasks
-
-HTTP/1.1 200 OK
-
-content-type: application/json
-
-[
-
-  {"id":1,"title":"Buy groceries","done":false},
-
-  {"id":2,"title":"Read FastAPI documentation","done":false},
-
-  {"id":3,"title":"Complete Stage 2 assignment","done":true}
-
-]
-
-# Fetch task by ID
-
-$ curl -i http://localhost:8000/tasks/1
-
-HTTP/1.1 200 OK
-
-content-type: application/json
-
-{"id":1,"title":"Buy groceries","done":false}
-
-# Non-existent task (404 Not Found)
-
-$ curl -i http://localhost:8000/tasks/999
-
-HTTP/1.1 404 Not Found
-
-content-type: application/json
-
-{"error":"Task 999 not found"}
-3. Create Endpoint (POST /tasks)
-# Valid creation
-
-$ curl -i -X POST http://localhost:8000/tasks \
-
+```bash
+# Missing required fields
+$ curl -i -X POST http://localhost:8000/auth/signup \
   -H "Content-Type: application/json" \
-
-  -d '{"title":"Deploy to production"}'
-
-HTTP/1.1 201 Created
-
-content-type: application/json
-
-{"id":4,"title":"Deploy to production","done":false}
-
-# Missing/Empty title validation error
-
-$ curl -i -X POST http://localhost:8000/tasks \
-
-  -H "Content-Type: application/json" \
-
-  -d '{"title":"   "}'
-
+  -d '{"email":" "}'
 HTTP/1.1 400 Bad Request
-
 content-type: application/json
 
-{"error":"Title is required and cannot be empty"}
-4. Update Endpoint (PUT /tasks/{id})
-$ curl -i -X PUT http://localhost:8000/tasks/4 \
+{"error":"Email and password are required"}
 
+# Successful Signup
+$ curl -i -X POST http://localhost:8000/auth/signup \
   -H "Content-Type: application/json" \
+  -d '{"email":"test@example.com","password":"password123"}'
+HTTP/1.1 201 Created
+content-type: application/json
 
-  -d '{"title":"Deploy to production & verify telemetry","done":true}'
+{"user":{"id":"usr_mock_123456","email":"test@example.com","aud":"authenticated"}}
+```
 
+### 3. Log In (`POST /auth/login`)
+
+```bash
+# Invalid Credentials
+$ curl -i -X POST http://localhost:8000/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"test@example.com","password":"wrongpassword"}'
+HTTP/1.1 401 Unauthorized
+content-type: application/json
+
+{"error":"Invalid login credentials"}
+
+# Successful Log In
+$ curl -i -X POST http://localhost:8000/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"test@example.com","password":"password123"}'
 HTTP/1.1 200 OK
-
 content-type: application/json
 
-{"id":4,"title":"Deploy to production & verify telemetry","done":true}
-5. Delete Endpoint (DELETE /tasks/{id})
-# Successful deletion
+{
+  "access_token": "mock_jwt_access_token_eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
+  "refresh_token": "mock_refresh_token_xyz987654321",
+  "token_type": "bearer",
+  "user": {"id":"usr_mock_123456","email":"test@example.com"}
+}
+```
 
-$ curl -i -X DELETE http://localhost:8000/tasks/4
+### 4. Protected Profile & Token Verification (`GET /protected/profile`)
 
+```bash
+# Missing Token (401 Unauthorized)
+$ curl -i http://localhost:8000/protected/profile
+HTTP/1.1 401 Unauthorized
+content-type: application/json
+
+{"error":"Access token required"}
+
+# Invalid/Tampered Token (401 Unauthorized)
+$ curl -i http://localhost:8000/protected/profile \
+  -H "Authorization: Bearer invalid_tampered_token"
+HTTP/1.1 401 Unauthorized
+content-type: application/json
+
+{"error":"Invalid or expired token"}
+
+# Valid Bearer Token (200 OK)
+$ curl -i http://localhost:8000/protected/profile \
+  -H "Authorization: Bearer mock_jwt_access_token_eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
+HTTP/1.1 200 OK
+content-type: application/json
+
+{"id":"usr_mock_123456","email":"test@example.com","role":"authenticated"}
+```
+
+### 5. Log Out (`POST /auth/logout`)
+
+```bash
+$ curl -i -X POST http://localhost:8000/auth/logout \
+  -H "Authorization: Bearer mock_jwt_access_token_eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
 HTTP/1.1 204 No Content
+```
 
-# Subsequent delete attempt (404)
+---
 
-$ curl -i -X DELETE http://localhost:8000/tasks/4
+## 🔒 Swagger UI Authorization
 
-HTTP/1.1 404 Not Found
+FastAPI's built-in Swagger UI at `http://localhost:8000/docs` includes an **Authorize** padlock button configured via `HTTPBearer`.
+1. Click **Authorize** at the top right of `/docs`.
+2. Paste the `access_token` returned by `/auth/login`.
+3. Call `/protected/profile`, `/protected/dashboard`, or `/auth/logout` directly from the browser!
 
-content-type: application/json
+---
 
-{"error":"Task 4 not found"}
+## 🤖 Stage 7: AI Rematch ("AI vs Me")
 
+### 1. Specification Prompt (Written from Memory)
+> *"Build a secure authentication API in Python using FastAPI and Supabase Auth as the Identity Provider. Implement 5 endpoints: POST /auth/signup, POST /auth/login, POST /auth/logout, GET /protected/profile, and GET /public/info. Never store or hash passwords locally. Verify access tokens via Supabase get_user(token) using a reusable FastAPI dependency (HTTPBearer). Return HTTP 400 for missing fields, HTTP 401 for invalid credentials or bad tokens, and HTTP 204 for logout. Configure Swagger UI with Bearer auth security scheme."*
 
-🗄️ Database Verification & Docker Inspection
-1. Direct PostgreSQL Verification via psql
-$ docker exec -it taskdb psql -U postgres -d tasks
+### 2. Execution & Quarantine Test Results (AI Version 1)
+- **Quarantined Code Path:** `ai-version/ai_auth_app.py`
+- **Checkpoint Results:**
+  - `POST /auth/signup` and `POST /auth/login` -> **Passed**
+  - `GET /public/info` -> **Passed**
+  - `GET /protected/profile` with no header -> **Failed** (Raised standard HTTP 500 / unhandled exception instead of formatted 401 JSON)
+  - `GET /protected/profile` with `Authorization: Bearer <token>` -> **Failed** (Did not catch `get_user` API exceptions, causing crashes on invalid tokens).
 
-tasks=# \dt
+### 3. Critical Analysis & Comparison
+- **How it handled token extraction:** Used raw `Header(None)` and manual `.replace("Bearer ", "")`, which crashed if the header format was slightly malformed.
+- **Security flaws introduced:** Did not safely wrap `get_user` in a try/except block; an invalid token raised an unhandled exception leaking stack traces instead of cleanly returning HTTP 401 `{"error": "Invalid or expired token"}`.
+- **What the prompt forgot to specify:** Failed to mandate explicit Pydantic/FastAPI exception handlers for uniform `{ "error": "..." }` response formatting.
 
-             List of relations
+### 4. Rematch Iteration (AI Version 2)
+- **Improved Prompt:** Explicitly commanded reusable `HTTPBearer` security dependencies with try/except exception wrappers and uniform `{ "error": "..." }` JSON responses.
+- **Result:** Version 2 passed all token verification and error handling checkpoints with 100% compliance.
 
- Schema | Name  | Type  |  Owner   
+---
 
---------+-------+-------+----------
+## 📜 Git Commit History
 
- public | tasks | table | postgres
-
-(1 row)
-
-tasks=# SELECT * FROM tasks;
-
- id |            title            | done 
-
-----+-----------------------------+------
-
-  1 | Buy groceries               | f
-
-  2 | Read FastAPI documentation  | f
-
-  3 | Complete Stage 2 assignment | t
-
-(3 rows)
-2. Table Schema & Index Definitions
-CREATE TABLE IF NOT EXISTS tasks (
-
-    id SERIAL PRIMARY KEY,
-
-    title TEXT NOT NULL,
-
-    done BOOLEAN NOT NULL DEFAULT FALSE
-
-);
-
-CREATE INDEX IF NOT EXISTS idx_tasks_done ON tasks(done);
-
-CREATE INDEX IF NOT EXISTS idx_tasks_title ON tasks(title);
-
-
-🎁 Stretch Features & Extras
-PostgreSQL Health Probe (GET /health): Runs SELECT 1; against PostgreSQL and reports { "status": "ok", "db": "ok" }. Load balancers and container orchestrators use this endpoint for traffic routing.
-SQL ILIKE Search: GET /tasks?search=FastAPI executes case-insensitive pattern matching directly in PostgreSQL using parameterized queries (WHERE title ILIKE %s).
-Status Filter & Sorting: GET /tasks?done=true leverages B-tree index on done, and GET /tasks?sort=title sorts alphabetically at the database layer.
-Real SQL Statistics (GET /stats): Computes total, completed, and open task counts in PostgreSQL using SELECT COUNT(*) FROM tasks and SELECT COUNT(*) FILTER (WHERE done = TRUE).
-Multi-Stage Dockerfile: Uses a 2-stage build (builder -> runner) to keep the production container lightweight and minimize vulnerability surface area.
-Container Healthchecks: compose.yaml specifies a pg_isready healthcheck on the database container, ensuring the API container waits for PostgreSQL to be fully ready before accepting requests.
-
-
-🤖 Stage 6: AI Rematch ("AI vs Me")
-1. Specification Prompt (Written from Memory)
-"Containerize our FastAPI task CRUD API using PostgreSQL as the backing database. Structure a Dockerfile and docker compose setup (compose.yaml) defining an api and a db service. Connect using DATABASE_URL loaded from .env (git-ignored, with .env.example provided). Create the tasks table on startup with id SERIAL PRIMARY KEY, title TEXT NOT NULL, and done BOOLEAN NOT NULL DEFAULT FALSE. Seed 3 initial tasks only if the table is empty. Support all 5 core endpoints (GET /tasks, GET /tasks/{id}, POST /tasks, PUT /tasks/{id}, DELETE /tasks/{id}) with parameterized queries (%s placeholders), custom 400 Bad Request handling for empty titles, and persistent data across restarts using a named Docker volume taskdata."
-2. Execution & Checkpoint Test Results (AI Version 1)
-Startup: Docker Compose started successfully.
-Checkpoint Results:
-GET /tasks, GET /tasks/1 -> Passed (200 OK)
-DELETE /tasks/1 -> Passed (204 No Content)
-POST /tasks with {} -> Failed (Returned 422 Unprocessable Entity instead of 400 Bad Request)
-POST /tasks with {"title": "   "} -> Failed (Did not strip whitespace, created blank task)
-Container coordination: Failed (Omitted condition: service_healthy in depends_on, causing race conditions on cold start).
-3. Critical Analysis & Comparison
-What it did better: Cleanly structured Pydantic schemas and utilized psycopg context managers (with conn.cursor() as cur:).
-What it got wrong / quietly ignored: Relied on FastAPI's default request body validation which generates HTTP 422 errors instead of HTTP 400. Did not sanitize input strings with .strip(). In compose.yaml, it used plain depends_on: [db] which only waits for the database container to start, not for PostgreSQL to finish socket initialization.
-What the prompt forgot to specify: Failed to explicitly mandate container healthcheck conditions in Docker Compose and custom exception handling for HTTP 400 status codes.
-4. Rematch Iteration (AI Version 2)
-Improved Prompt: Explicitly commanded raw JSON parsing with 400 Bad Request handlers, .strip() validation, and container healthcheck gating with pg_isready.
-Result: Version 2 (ai-version/ai_postgres_app_v2.py) passed all validation and container checkpoints with 100% compliance.
-
-
-📜 Git Commit History
-* Stage 6: AI vs me
-
-* Stage 5: one-command stack + docs
-
-* Extras: DB healthcheck, filtering, stats, reset, and indexes
-
-* Stage 4: docker-compose the whole stack
-
-* Stage 3: full CRUD on Postgres
-
-* Stage 2: read from Postgres
-
-* Stage 1: connect via .env and create table
-
-* Stage 0: Postgres in Docker
-
-* [A2 Commits]: Stage 0 through Stage 6 (SQLite persistence)
-
-* [A1 Commits]: Stage 0 through Stage 7 (In-memory baseline)
-
+* Stage 7: AI vs me
+* Stage 6: publish to GitHub and write README
+* Stage 5: Swagger UI documentation with bearer auth
+* Stage 4: auth middleware and logout endpoint
+* Stage 3: profile route token verification
+* Stage 2: public route and unverified protected route
+* Stage 1: signup and login routes working
+* Stage 0: setup server and supabase client
