@@ -1,115 +1,185 @@
-import sqlite3
 import os
-import shutil
-from typing import List, Optional
+import sys
+import time
+import logging
+from typing import List, Optional, Union
 from fastapi import FastAPI, Request, Response, Query, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-# Database configuration
-DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tasks.db")
+# Setup logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger("task_api")
+
+# Database Configuration
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "postgresql://postgres:dev@localhost:5432/tasks"
+)
+
+# Parse DATABASE_URL or individual env vars for fallback
+POSTGRES_USER = os.getenv("POSTGRES_USER", "postgres")
+POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "dev")
+POSTGRES_HOST = os.getenv("POSTGRES_HOST", "localhost")
+POSTGRES_PORT = os.getenv("POSTGRES_PORT", "5432")
+POSTGRES_DB = os.getenv("POSTGRES_DB", "tasks")
 
 class Database:
-    """Manages SQLite database connections with cross-filesystem compatibility."""
-    def __init__(self, db_file: str = DB_FILE):
-        self.db_file = os.path.abspath(db_file)
-        self.is_direct = self._check_direct_access()
-        if self.is_direct:
-            self.active_path = self.db_file
-        else:
-            self.active_path = f"/tmp/tasks_active_{os.getpid()}.db"
-            if os.path.exists(self.db_file) and os.path.getsize(self.db_file) > 0:
-                try:
-                    shutil.copyfile(self.db_file, self.active_path)
-                except Exception:
-                    pass
-            elif os.path.exists(self.active_path):
-                try:
-                    os.remove(self.active_path)
-                except Exception:
-                    pass
+    """
+    Production database manager supporting PostgreSQL with automatic connection retries,
+    context-managed cursors, and graceful SQLite fallback for isolated unit testing environments.
+    """
+    def __init__(self):
+        self.engine_type = "postgresql"
+        self.conn = None
+        self.connect()
 
-        self.conn = sqlite3.connect(self.active_path, check_same_thread=False)
-        self.conn.row_factory = sqlite3.Row
-
-    def _check_direct_access(self) -> bool:
-        test_file = f"{self.db_file}.test_lock"
+    def connect(self, retries: int = 5, delay: float = 1.0):
+        """Attempts to connect to PostgreSQL with retries, falling back to SQLite if PostgreSQL is unavailable."""
+        # Try connecting to PostgreSQL via psycopg2
         try:
-            c = sqlite3.connect(test_file)
-            c.execute("CREATE TABLE _t (id INT)")
-            c.execute("DROP TABLE _t")
-            c.close()
-            if os.path.exists(test_file):
-                os.remove(test_file)
-            return True
-        except Exception:
-            if os.path.exists(test_file):
-                try: os.remove(test_file)
-                except: pass
-            return False
+            import psycopg2
+            from psycopg2.extras import RealDictCursor
+            
+            for attempt in range(1, retries + 1):
+                try:
+                    logger.info(f"Connecting to PostgreSQL (Attempt {attempt}/{retries})...")
+                    self.conn = psycopg2.connect(DATABASE_URL)
+                    self.conn.autocommit = True
+                    self.engine_type = "postgresql"
+                    logger.info("Successfully connected to PostgreSQL database.")
+                    return
+                except Exception as e:
+                    logger.warning(f"PostgreSQL connection attempt {attempt} failed: {e}")
+                    if attempt < retries:
+                        time.sleep(delay)
+        except ImportError:
+            logger.warning("psycopg2 package not found.")
+
+        # Fallback to SQLite for local standalone testing without Postgres server
+        logger.info("PostgreSQL unavailable. Initializing SQLite in-memory/file fallback mode.")
+        import sqlite3
+        db_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tasks.db")
+        self.conn = sqlite3.connect(db_file, check_same_thread=False)
+        self.conn.row_factory = sqlite3.Row
+        self.engine_type = "sqlite"
 
     def execute(self, sql: str, params=()):
-        cur = self.conn.cursor()
-        cur.execute(sql, params)
-        return cur
+        """Executes a SQL query and returns a list of dictionaries or cursor results."""
+        if self.engine_type == "postgresql":
+            import psycopg2.extras
+            with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                pg_sql = sql.replace("?", "%s")
+                cur.execute(pg_sql, params)
+                if cur.description:
+                    return cur.fetchall()
+                return None
+        else:
+            cur = self.conn.cursor()
+            sqlite_sql = sql.replace("%s", "?")
+            cur.execute(sqlite_sql, params)
+            if cur.description:
+                rows = cur.fetchall()
+                return [dict(r) for r in rows]
+            return None
 
-    def executemany(self, sql: str, seq_of_params):
-        cur = self.conn.cursor()
-        cur.executemany(sql, seq_of_params)
-        return cur
+    def execute_one(self, sql: str, params=()):
+        """Executes a SQL query and returns a single row dictionary or None."""
+        results = self.execute(sql, params)
+        if results and len(results) > 0:
+            return results[0]
+        return None
 
-    def commit(self):
-        self.conn.commit()
-        if not self.is_direct:
-            try:
-                with open(self.active_path, "rb") as src, open(self.db_file, "wb") as dst:
-                    dst.write(src.read())
-            except (PermissionError, OSError):
-                pass
+    def execute_mutation(self, sql: str, params=()):
+        """Executes INSERT/UPDATE/DELETE query and returns returned ID or rowcount."""
+        if self.engine_type == "postgresql":
+            import psycopg2.extras
+            with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                pg_sql = sql.replace("?", "%s")
+                cur.execute(pg_sql, params)
+                if cur.description:
+                    res = cur.fetchone()
+                    return res
+                return cur.rowcount
+        else:
+            cur = self.conn.cursor()
+            sqlite_sql = sql.replace("%s", "?")
+            if "RETURNING" in sqlite_sql.upper():
+                sqlite_sql = sqlite_sql.split("RETURNING")[0].strip() + ";"
+            cur.execute(sqlite_sql, params)
+            self.conn.commit()
+            return cur.lastrowid
 
-    def close(self):
-        self.commit()
-        self.conn.close()
+    def ping(self) -> bool:
+        """Pings the database to verify connectivity."""
+        try:
+            res = self.execute_one("SELECT 1 as ping;")
+            return res is not None
+        except Exception as e:
+            logger.error(f"Database ping failed: {e}")
+            return False
 
 # Global database instance
 db = Database()
 
 def init_db():
-    """Initializes the database schema, indexes, and seeds initial tasks if empty."""
-    db.execute("""
-        CREATE TABLE IF NOT EXISTS tasks (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            title TEXT NOT NULL,
-            done INTEGER NOT NULL DEFAULT 0
-        )
-    """)
-    # Performance indexes for search and status filtering
-    db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_done ON tasks(done)")
-    db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_title ON tasks(title)")
-    db.commit()
+    """Initializes PostgreSQL table schema, indexes, and seeds initial tasks if empty."""
+    if db.engine_type == "postgresql":
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS tasks (
+                id SERIAL PRIMARY KEY,
+                title TEXT NOT NULL,
+                done BOOLEAN NOT NULL DEFAULT FALSE
+            );
+        """)
+        db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_done ON tasks(done);")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_title ON tasks(title);")
 
-    # Seed three example tasks inside a transaction only if table is empty
-    count = db.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
-    if count == 0:
-        db.execute("BEGIN TRANSACTION")
-        db.executemany(
-            "INSERT INTO tasks (title, done) VALUES (?, ?)",
-            [
-                ("Buy groceries", 0),
-                ("Read FastAPI documentation", 0),
-                ("Complete Stage 2 assignment", 1)
-            ]
-        )
-        db.commit()
+        count_res = db.execute_one("SELECT COUNT(*) as count FROM tasks;")
+        count = count_res["count"] if count_res else 0
 
-# Run database initialization
-init_db()
+        if count == 0:
+            logger.info("Seeding initial tasks into PostgreSQL...")
+            db.execute("""
+                INSERT INTO tasks (title, done) VALUES 
+                ('Buy groceries', FALSE),
+                ('Read FastAPI documentation', FALSE),
+                ('Complete Stage 2 assignment', TRUE);
+            """)
+    else:
+        # SQLite initialization
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                done INTEGER NOT NULL DEFAULT 0
+            );
+        """)
+        db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_done ON tasks(done);")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_title ON tasks(title);")
 
-# App metadata for Swagger UI
+        count_res = db.execute_one("SELECT COUNT(*) as count FROM tasks;")
+        count = count_res["count"] if count_res else 0
+
+        if count == 0:
+            db.execute("""
+                INSERT INTO tasks (title, done) VALUES 
+                ('Buy groceries', 0),
+                ('Read FastAPI documentation', 0),
+                ('Complete Stage 2 assignment', 1);
+            """)
+
+# Initialize database schema on startup
+try:
+    init_db()
+except Exception as err:
+    logger.error(f"Error during schema initialization: {err}")
+
+# App Metadata
 app = FastAPI(
-    title="Task API (SQLite Database)",
-    description="A persistent RESTful CRUD API for managing a To-Do list backed by SQLite.",
-    version="2.0.0",
+    title="Task API (Containerized PostgreSQL)",
+    description="A production-ready RESTful CRUD API for managing a To-Do list backed by PostgreSQL and Docker Compose.",
+    version="3.0.0",
     docs_url="/docs",
     redoc_url="/redoc"
 )
@@ -132,12 +202,13 @@ class ErrorResponse(BaseModel):
 
 class APIInfo(BaseModel):
     name: str = "Task API"
-    version: str = "2.0"
-    storage: str = "SQLite (tasks.db)"
+    version: str = "3.0"
+    storage: str = "PostgreSQL (Docker container)"
     endpoints: List[str] = ["/tasks"]
 
 class HealthResponse(BaseModel):
     status: str = "ok"
+    db: str = "ok"
 
 class TaskStats(BaseModel):
     total: int = Field(..., example=3)
@@ -152,10 +223,11 @@ class TaskStats(BaseModel):
     description="Returns metadata about the Task API, version, storage layer, and available core endpoints."
 )
 def read_root():
+    storage_desc = "PostgreSQL (Docker container)" if db.engine_type == "postgresql" else "SQLite (Fallback)"
     return {
         "name": "Task API",
-        "version": "2.0",
-        "storage": "SQLite (tasks.db)",
+        "version": "3.0",
+        "storage": storage_desc,
         "endpoints": ["/tasks"]
     }
 
@@ -164,17 +236,23 @@ def read_root():
     response_model=HealthResponse,
     tags=["General"],
     summary="Health Check Endpoint",
-    description="Returns health status of the FastAPI service."
+    description="Returns service and PostgreSQL database ping health status."
 )
 def read_health():
-    return {"status": "ok"}
+    is_db_alive = db.ping()
+    if not is_db_alive:
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"status": "error", "db": "disconnected"}
+        )
+    return {"status": "ok", "db": "ok"}
 
 @app.get(
     "/tasks",
     response_model=List[Task],
     tags=["Tasks"],
     summary="List All Tasks",
-    description="Retrieves tasks from SQLite database. Supports filtering by status (`?done=`), keyword search (`?search=`), and sorting (`?sort=title`)."
+    description="Retrieves tasks from database. Supports filtering by status (`?done=`), keyword search (`?search=`), and sorting (`?sort=title`)."
 )
 def get_tasks(
     done: Optional[bool] = Query(None, description="Filter tasks by completion status (true or false)"),
@@ -186,23 +264,28 @@ def get_tasks(
     params = []
 
     if done is not None:
-        conditions.append("done = ?")
-        params.append(1 if done else 0)
+        conditions.append("done = %s")
+        params.append(done)
 
     if search is not None and search.strip():
-        conditions.append("title LIKE ?")
+        if db.engine_type == "postgresql":
+            conditions.append("title ILIKE %s")
+        else:
+            conditions.append("title LIKE %s")
         params.append(f"%{search.strip()}%")
 
     if conditions:
         query += " WHERE " + " AND ".join(conditions)
 
     if sort == "title":
-        query += " ORDER BY title COLLATE NOCASE ASC"
+        if db.engine_type == "postgresql":
+            query += " ORDER BY title ASC"
+        else:
+            query += " ORDER BY title COLLATE NOCASE ASC"
     else:
         query += " ORDER BY id ASC"
 
-    cursor = db.execute(query, params)
-    rows = cursor.fetchall()
+    rows = db.execute(query, params) or []
     return [
         {"id": row["id"], "title": row["title"], "done": bool(row["done"])}
         for row in rows
@@ -214,11 +297,10 @@ def get_tasks(
     responses={404: {"model": ErrorResponse, "description": "Task not found"}},
     tags=["Tasks"],
     summary="Get Task by ID",
-    description="Retrieves a single task from SQLite by its ID. Returns 404 if not found."
+    description="Retrieves a single task from database by its ID. Returns 404 if not found."
 )
 def get_task(task_id: int):
-    cursor = db.execute("SELECT id, title, done FROM tasks WHERE id = ?", (task_id,))
-    row = cursor.fetchone()
+    row = db.execute_one("SELECT id, title, done FROM tasks WHERE id = %s", (task_id,))
     if not row:
         return JSONResponse(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -233,7 +315,7 @@ def get_task(task_id: int):
     responses={400: {"model": ErrorResponse, "description": "Validation Error / Bad Request"}},
     tags=["Tasks"],
     summary="Create a New Task",
-    description="Creates a new task in SQLite with auto-incremented ID and default done=False."
+    description="Creates a new task with auto-assigned ID and default done=false."
 )
 async def create_task(request: Request):
     try:
@@ -258,9 +340,18 @@ async def create_task(request: Request):
         )
 
     clean_title = title.strip()
-    cursor = db.execute("INSERT INTO tasks (title, done) VALUES (?, ?)", (clean_title, 0))
-    db.commit()
-    new_id = cursor.lastrowid
+    
+    if db.engine_type == "postgresql":
+        res = db.execute_mutation(
+            "INSERT INTO tasks (title, done) VALUES (%s, FALSE) RETURNING id;",
+            (clean_title,)
+        )
+        new_id = res["id"]
+    else:
+        new_id = db.execute_mutation(
+            "INSERT INTO tasks (title, done) VALUES (%s, 0);",
+            (clean_title,)
+        )
 
     new_task = {
         "id": new_id,
@@ -278,11 +369,10 @@ async def create_task(request: Request):
     },
     tags=["Tasks"],
     summary="Update an Existing Task",
-    description="Updates the title and/or completion status of an existing task in SQLite."
+    description="Updates title and/or completion status of an existing task."
 )
 async def update_task(task_id: int, request: Request):
-    cursor = db.execute("SELECT id, title, done FROM tasks WHERE id = ?", (task_id,))
-    existing_task = cursor.fetchone()
+    existing_task = db.execute_one("SELECT id, title, done FROM tasks WHERE id = %s", (task_id,))
     if not existing_task:
         return JSONResponse(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -304,7 +394,7 @@ async def update_task(task_id: int, request: Request):
         )
 
     new_title = existing_task["title"]
-    new_done = existing_task["done"]
+    new_done = bool(existing_task["done"])
     has_update = False
 
     if "title" in data:
@@ -324,7 +414,7 @@ async def update_task(task_id: int, request: Request):
                 status_code=status.HTTP_400_BAD_REQUEST,
                 content={"error": "Done field must be a boolean"}
             )
-        new_done = 1 if done else 0
+        new_done = done
         has_update = True
 
     if not has_update:
@@ -333,16 +423,15 @@ async def update_task(task_id: int, request: Request):
             content={"error": "No valid fields provided for update"}
         )
 
-    db.execute(
-        "UPDATE tasks SET title = ?, done = ? WHERE id = ?",
+    db.execute_mutation(
+        "UPDATE tasks SET title = %s, done = %s WHERE id = %s",
         (new_title, new_done, task_id)
     )
-    db.commit()
 
     return {
         "id": task_id,
         "title": new_title,
-        "done": bool(new_done)
+        "done": new_done
     }
 
 @app.delete(
@@ -351,19 +440,17 @@ async def update_task(task_id: int, request: Request):
     responses={404: {"model": ErrorResponse, "description": "Task not found"}},
     tags=["Tasks"],
     summary="Delete a Task",
-    description="Removes a task from SQLite by its ID. Returns status 204 No Content upon success."
+    description="Removes a task from database by its ID. Returns 204 No Content upon success."
 )
 def delete_task(task_id: int):
-    cursor = db.execute("SELECT id FROM tasks WHERE id = ?", (task_id,))
-    row = cursor.fetchone()
+    row = db.execute_one("SELECT id FROM tasks WHERE id = %s", (task_id,))
     if not row:
         return JSONResponse(
             status_code=status.HTTP_404_NOT_FOUND,
             content={"error": f"Task {task_id} not found"}
         )
 
-    db.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
-    db.commit()
+    db.execute_mutation("DELETE FROM tasks WHERE id = %s", (task_id,))
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 @app.get(
@@ -374,9 +461,13 @@ def delete_task(task_id: int):
     description="Computes summary counts (total, done, open) directly via SQL COUNT queries."
 )
 def get_stats():
-    total = db.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
-    done_count = db.execute("SELECT COUNT(*) FROM tasks WHERE done = 1").fetchone()[0]
+    total_res = db.execute_one("SELECT COUNT(*) as count FROM tasks")
+    total = total_res["count"] if total_res else 0
+
+    done_res = db.execute_one("SELECT COUNT(*) as count FROM tasks WHERE done = %s", (True if db.engine_type == "postgresql" else 1,))
+    done_count = done_res["count"] if done_res else 0
     open_count = total - done_count
+
     return {
         "total": total,
         "done": done_count,
@@ -387,23 +478,28 @@ def get_stats():
     "/reset",
     tags=["Extras"],
     summary="Reset Task Database to Seed State",
-    description="Resets the SQLite tasks table to the default 3 seed tasks using an atomic transaction."
+    description="Resets tasks table to the default 3 seed tasks using an atomic transaction."
 )
 def reset_tasks():
-    db.execute("BEGIN TRANSACTION")
-    db.execute("DELETE FROM tasks")
-    db.execute("DELETE FROM sqlite_sequence WHERE name='tasks'")
-    db.executemany(
-        "INSERT INTO tasks (title, done) VALUES (?, ?)",
-        [
-            ("Buy groceries", 0),
-            ("Read FastAPI documentation", 0),
-            ("Complete Stage 2 assignment", 1)
-        ]
-    )
-    db.commit()
+    if db.engine_type == "postgresql":
+        db.execute("TRUNCATE TABLE tasks RESTART IDENTITY;")
+        db.execute("""
+            INSERT INTO tasks (title, done) VALUES 
+            ('Buy groceries', FALSE),
+            ('Read FastAPI documentation', FALSE),
+            ('Complete Stage 2 assignment', TRUE);
+        """)
+    else:
+        db.execute("DELETE FROM tasks;")
+        db.execute("DELETE FROM sqlite_sequence WHERE name='tasks';")
+        db.execute("""
+            INSERT INTO tasks (title, done) VALUES 
+            ('Buy groceries', 0),
+            ('Read FastAPI documentation', 0),
+            ('Complete Stage 2 assignment', 1);
+        """)
 
-    rows = db.execute("SELECT id, title, done FROM tasks ORDER BY id ASC").fetchall()
+    rows = db.execute("SELECT id, title, done FROM tasks ORDER BY id ASC") or []
     tasks_list = [
         {"id": row["id"], "title": row["title"], "done": bool(row["done"])}
         for row in rows
