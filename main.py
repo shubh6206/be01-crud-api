@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Request, Response, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.openapi.utils import get_openapi
 from pydantic import BaseModel, Field
 from supabase import create_client, Client
 
@@ -32,8 +33,13 @@ except Exception as e:
     logger.warning(f"Could not initialize production Supabase client ({e}).")
     supabase = None
 
-# Security scheme for FastAPI / Swagger UI
-security = HTTPBearer(auto_error=False)
+# Security scheme for FastAPI / Swagger UI padlock
+security = HTTPBearer(
+    bearerFormat="JWT",
+    scheme_name="BearerAuth",
+    auto_error=False,
+    description="Enter your Supabase JWT access token obtained from /auth/login"
+)
 
 # App Metadata
 app = FastAPI(
@@ -43,6 +49,31 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc"
 )
+
+# Custom OpenAPI schema to ensure Bearer padlock appears on protected endpoints in Swagger UI
+def custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+    openapi_schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        description=app.description,
+        routes=app.routes,
+    )
+    if "components" not in openapi_schema:
+        openapi_schema["components"] = {}
+    openapi_schema["components"]["securitySchemes"] = {
+        "BearerAuth": {
+            "type": "http",
+            "scheme": "bearer",
+            "bearerFormat": "JWT",
+            "description": "Paste Supabase JWT access token here"
+        }
+    }
+    app.openapi_schema = openapi_schema
+    return app.openapi_schema
+
+app.openapi = custom_openapi
 
 # Request Schemas
 class AuthCredentials(BaseModel):
@@ -297,7 +328,7 @@ def public_info():
         401: {"model": ErrorResponse, "description": "Invalid or missing token"}
     },
     tags=["Protected"],
-    summary="User Profile Endpoint (Guarded by Middleware)",
+    summary="User Profile Endpoint (Guarded by Bearer Auth)",
     description="Protected route using reusable get_current_user auth dependency."
 )
 def protected_profile(current_user: Dict[str, Any] = Depends(get_current_user)):
