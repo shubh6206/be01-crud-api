@@ -32,6 +32,9 @@ except Exception as e:
     logger.warning(f"Could not initialize production Supabase client ({e}).")
     supabase = None
 
+# Security scheme for FastAPI / Swagger UI
+security = HTTPBearer(auto_error=False)
+
 # App Metadata
 app = FastAPI(
     title="Auth · Login & Protect API (Supabase Auth)",
@@ -48,6 +51,65 @@ class AuthCredentials(BaseModel):
 
 class ErrorResponse(BaseModel):
     error: str = Field(..., example="Invalid or expired token")
+
+# Reusable Auth Dependency (Guard)
+async def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)) -> Dict[str, Any]:
+    if not credentials or not credentials.credentials:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"error": "Access token required"}
+        )
+
+    token = credentials.credentials.strip()
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"error": "Access token required"}
+        )
+
+    try:
+        if supabase and "placeholder" not in str(supabase.supabase_url):
+            res = supabase.auth.get_user(token)
+            if not res or not res.user:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail={"error": "Invalid or expired token"}
+                )
+            u = res.user
+            return {
+                "id": getattr(u, "id", None),
+                "email": getattr(u, "email", None),
+                "created_at": str(getattr(u, "created_at", "")),
+                "role": getattr(u, "role", "authenticated")
+            }
+        else:
+            # Standalone fallback verification for testing
+            if "invalid" in token or "tampered" in token or token == "badtoken":
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail={"error": "Invalid or expired token"}
+                )
+            return {
+                "id": "usr_mock_123456",
+                "email": "test@example.com",
+                "created_at": "2026-08-22T12:00:00Z",
+                "role": "authenticated"
+            }
+    except HTTPException:
+        raise
+    except Exception as err:
+        logger.error(f"Token verification exception: {err}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"error": "Invalid or expired token"}
+        )
+
+# Exception Handler for Custom JSON Format on HTTPException
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    if isinstance(exc.detail, dict) and "error" in exc.detail:
+        return JSONResponse(status_code=exc.status_code, content=exc.detail)
+    return JSONResponse(status_code=exc.status_code, content={"error": str(exc.detail)})
 
 @app.get(
     "/",
@@ -200,6 +262,25 @@ async def login(request: Request):
             content={"error": "Invalid login credentials"}
         )
 
+@app.post(
+    "/auth/logout",
+    status_code=status.HTTP_204_NO_CONTENT,
+    responses={
+        204: {"description": "Successfully signed out user session"},
+        401: {"model": ErrorResponse, "description": "Invalid or missing token"}
+    },
+    tags=["Authentication"],
+    summary="User Log Out",
+    description="Ends the user's Supabase Auth session using a valid Bearer JWT."
+)
+async def logout(current_user: Dict[str, Any] = Depends(get_current_user)):
+    try:
+        if supabase and "placeholder" not in str(supabase.supabase_url):
+            supabase.auth.sign_out()
+    except Exception as err:
+        logger.error(f"Supabase logout error: {err}")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
 @app.get(
     "/public/info",
     tags=["Public"],
@@ -216,59 +297,28 @@ def public_info():
         401: {"model": ErrorResponse, "description": "Invalid or missing token"}
     },
     tags=["Protected"],
-    summary="User Profile Endpoint (Stage 3: Token Verification)",
-    description="Protected route that extracts and verifies Bearer JWT token against Supabase."
+    summary="User Profile Endpoint (Guarded by Middleware)",
+    description="Protected route using reusable get_current_user auth dependency."
 )
-def protected_profile(request: Request):
-    auth_header = request.headers.get("Authorization")
-    if not auth_header or not auth_header.startswith("Bearer "):
-        return JSONResponse(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            content={"error": "Access token required"}
-        )
+def protected_profile(current_user: Dict[str, Any] = Depends(get_current_user)):
+    return current_user
 
-    token = auth_header.split("Bearer ")[1].strip()
-    if not token:
-        return JSONResponse(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            content={"error": "Access token required"}
-        )
-
-    # Verify token with Supabase get_user(token)
-    try:
-        if supabase and "placeholder" not in str(supabase.supabase_url):
-            res = supabase.auth.get_user(token)
-            if not res or not res.user:
-                return JSONResponse(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    content={"error": "Invalid or expired token"}
-                )
-            u = res.user
-            user_data = {
-                "id": getattr(u, "id", None),
-                "email": getattr(u, "email", None),
-                "created_at": getattr(u, "created_at", None),
-                "role": getattr(u, "role", "authenticated")
-            }
-            return user_data
-        else:
-            if "invalid" in token or "tampered" in token or token == "badtoken":
-                return JSONResponse(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    content={"error": "Invalid or expired token"}
-                )
-            return {
-                "id": "usr_mock_123456",
-                "email": "test@example.com",
-                "created_at": "2026-08-22T12:00:00Z",
-                "role": "authenticated"
-            }
-    except Exception as err:
-        logger.error(f"Token verification error: {err}")
-        return JSONResponse(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            content={"error": "Invalid or expired token"}
-        )
+@app.get(
+    "/protected/dashboard",
+    responses={
+        200: {"description": "Returns protected dashboard data"},
+        401: {"model": ErrorResponse, "description": "Invalid or missing token"}
+    },
+    tags=["Protected"],
+    summary="Protected Dashboard Endpoint",
+    description="Demonstrates reusability of auth dependency across multiple protected routes."
+)
+def protected_dashboard(current_user: Dict[str, Any] = Depends(get_current_user)):
+    return {
+        "message": "Welcome to your protected dashboard",
+        "user": current_user,
+        "metrics": {"active_sessions": 1, "security_status": "guarded"}
+    }
 
 if __name__ == "__main__":
     import uvicorn
