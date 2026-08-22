@@ -88,4 +88,44 @@ class TestTaskAPIPostgreSQL(unittest.TestCase):
         self.assertEqual(res400.status_code, 400)
         self.assertEqual(res400.json(), {"error": "Title cannot be empty"})
 
-    
+    def test_delete_task(self):
+        res = self.client.delete("/tasks/1")
+        self.assertEqual(res.status_code, 204)
+
+        # Verify gone
+        res_get = self.client.get("/tasks/1")
+        self.assertEqual(res_get.status_code, 404)
+
+        # 404 on deleting already deleted task
+        res_del_again = self.client.delete("/tasks/1")
+        self.assertEqual(res_del_again.status_code, 404)
+
+    def test_extras_filtering_and_stats(self):
+        # Done filter
+        res_done = self.client.get("/tasks?done=true")
+        self.assertEqual(res_done.status_code, 200)
+        self.assertEqual(len(res_done.json()), 1)
+        self.assertEqual(res_done.json()[0]["id"], 3)
+
+        # Search filter (case-insensitive ILIKE)
+        res_search = self.client.get("/tasks?search=fastapi")
+        self.assertEqual(res_search.status_code, 200)
+        self.assertEqual(len(res_search.json()), 1)
+        self.assertEqual(res_search.json()[0]["title"], "Read FastAPI documentation")
+
+        # Sorting
+        res_sort = self.client.get("/tasks?sort=title")
+        self.assertEqual(res_sort.status_code, 200)
+        titles = [t["title"] for t in res_sort.json()]
+        self.assertEqual(titles, sorted(titles, key=str.lower))
+
+        # Stats
+        res_stats = self.client.get("/stats")
+        self.assertEqual(res_stats.status_code, 200)
+        stats = res_stats.json()
+        self.assertEqual(stats["total"], 3)
+        self.assertEqual(stats["done"], 1)
+        self.assertEqual(stats["open"], 2)
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
