@@ -107,7 +107,6 @@ async def signup(request: Request):
             user_data = res.user.dict() if hasattr(res.user, "dict") else {"id": getattr(res.user, "id", "dummy-id"), "email": clean_email}
             return JSONResponse(status_code=status.HTTP_201_CREATED, content={"user": user_data})
         else:
-            # Standalone fallback mode response if Supabase project URL is placeholder
             return JSONResponse(
                 status_code=status.HTTP_201_CREATED,
                 content={
@@ -180,7 +179,6 @@ async def login(request: Request):
                 "user": res.user.dict() if hasattr(res.user, "dict") else {"id": getattr(res.user, "id", None), "email": clean_email}
             }
         else:
-            # Standalone fallback mode for tests/development
             if password == "wrongpassword" or "invalid" in clean_email:
                 return JSONResponse(
                     status_code=status.HTTP_401_UNAUTHORIZED,
@@ -201,6 +199,45 @@ async def login(request: Request):
             status_code=status.HTTP_401_UNAUTHORIZED,
             content={"error": "Invalid login credentials"}
         )
+
+@app.get(
+    "/public/info",
+    tags=["Public"],
+    summary="Public Information Endpoint",
+    description="Returns public open information requiring no authentication."
+)
+def public_info():
+    return {"message": "Welcome stranger! This info is public."}
+
+@app.get(
+    "/protected/profile",
+    responses={
+        200: {"description": "Returns user profile"},
+        401: {"model": ErrorResponse, "description": "Access token required"}
+    },
+    tags=["Protected"],
+    summary="User Profile Endpoint (Stage 2: Unverified Header Check)",
+    description="Protected route extracting Bearer token from Authorization header."
+)
+def protected_profile(request: Request):
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        return JSONResponse(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            content={"error": "Access token required"}
+        )
+
+    token = auth_header.split("Bearer ")[1].strip()
+    if not token:
+        return JSONResponse(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            content={"error": "Access token required"}
+        )
+
+    return {
+        "message": "Token presented successfully",
+        "token_preview": token[:15] + "..." if len(token) > 15 else token
+    }
 
 if __name__ == "__main__":
     import uvicorn
