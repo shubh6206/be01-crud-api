@@ -1,0 +1,19 @@
+# Environment secrets
+.env
+
+# Database storage
+tasks.db
+tasks.db.test_lock
+
+# Python cache & virtualenv
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+
+# IDE & OS files
+.DS_Store
+.vscode/
+.idea/
